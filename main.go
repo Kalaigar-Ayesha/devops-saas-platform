@@ -12,8 +12,13 @@ func renderTemplate(w http.ResponseWriter, tmpl string) {
 		http.Error(w, "Page not found", http.StatusNotFound)
 		return
 	}
-	t.Execute(w, nil)
+
+	if err := t.Execute(w, nil); err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 }
+
 
 func main() {
 	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
