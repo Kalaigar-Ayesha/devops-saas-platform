@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: saas-go-web-app
+  repository: kayesha01/go-web-app
   tag: "21199948482"
   pullPolicy: IfNotPresent
 
