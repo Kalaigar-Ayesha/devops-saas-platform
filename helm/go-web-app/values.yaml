@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: saas-go-web-app
-  tag: v1
+  tag: "21199948482"
   pullPolicy: IfNotPresent
 
 service:
