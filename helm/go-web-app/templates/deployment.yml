@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saas-go-web-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saas-go-web-app
+  template:
+    metadata:
+      labels:
+        app: saas-go-web-app
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 8080
