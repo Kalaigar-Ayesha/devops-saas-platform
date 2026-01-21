@@ -22,6 +22,9 @@ jobs:
         with:
           go-version: "1.22"
 
+      - name: Download dependencies
+        run: go mod download
+
       - name: Build
         run: go build -o go-web-app
 
@@ -36,10 +39,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Download dependencies
+        run: go mod download
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.56.2
+          version: latest
+          args: --timeout=5m
 
   docker-push:
     runs-on: ubuntu-latest
