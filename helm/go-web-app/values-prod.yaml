@@ -1,0 +1,81 @@
+replicaCount: 3
+
+image:
+  repository: kayesha01/go-web-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: go-web-app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: go-web-app-prod-tls
+      hosts:
+        - go-web-app.example.com
+
+rollingUpdate:
+  maxUnavailable: 0
+  maxSurge: 1
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+
+secrets:
+  name: app-secrets-prod
+  dbHost: "saas-platform-db-prod.cluster-xxx.us-east-1.rds.amazonaws.com"
+  dbPassword: "prod-secure-password-789"
+  jwtSecret: "prod-jwt-secret-key-very-secure"
+  redisPassword: "prod-redis-password"
+
+environment: "production"
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+networkPolicy:
+  enabled: true
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - go-web-app
+        topologyKey: kubernetes.io/hostname
+
+nodeSelector: {}
+tolerations: []

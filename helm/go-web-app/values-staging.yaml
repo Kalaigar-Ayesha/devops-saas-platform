@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: kayesha01/go-web-app
-  tag: "21201892766"
+  tag: "latest"
   pullPolicy: IfNotPresent
 
 service:
@@ -16,16 +16,15 @@ ingress:
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
   hosts:
-    - host: go-web-app.local
+    - host: staging-go-web-app.local
       paths:
         - path: /
           pathType: Prefix
   tls:
-    - secretName: go-web-app-tls
+    - secretName: go-web-app-staging-tls
       hosts:
-        - go-web-app.local
+        - staging-go-web-app.local
 
 rollingUpdate:
   maxUnavailable: 25%
@@ -42,17 +41,17 @@ resources:
 autoscaling:
   enabled: true
   minReplicas: 2
-  maxReplicas: 10
+  maxReplicas: 5
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 80
 
 secrets:
-  name: app-secrets
+  name: app-secrets-staging
+  dbHost: "saas-platform-db-staging.cluster-xxx.us-east-1.rds.amazonaws.com"
+  dbPassword: "staging-password-456"
+  jwtSecret: "staging-jwt-secret-key"
 
-environment: "development"
-
-podAnnotations:
-  rollme: {{ randAlphaNum 5 | quote }}
+environment: "staging"
 
 podDisruptionBudget:
   enabled: true
@@ -60,11 +59,3 @@ podDisruptionBudget:
 
 networkPolicy:
   enabled: true
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              name: ingress-nginx
-      ports:
-        - protocol: TCP
-          port: 8080

@@ -1,17 +1,26 @@
-name: CI/CD
+name: CI/CD Pipeline
 
 on:
   push:
     branches:
       - main
+      - develop
     paths-ignore:
-      - 'helm/**'
-      - 'k8s/**'
       - 'README.md'
+      - 'docs/**'
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.coverage.outputs.percentage }}
 
     steps:
       - name: Checkout repository
@@ -22,40 +31,68 @@ jobs:
         with:
           go-version: "1.22"
 
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
       - name: Download dependencies
         run: go mod download
 
-      - name: Build
-        run: go build -o go-web-app
+      - name: Run tests with coverage
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+          go tool cover -func=coverage.out
 
-      - name: Test
-        run: go test ./...
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
 
-  code-quality:
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+          echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
+
+  security-scan:
     runs-on: ubuntu-latest
-    needs: build
+    needs: test
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Run Gosec Security Scanner
+        uses: securecodewarrior/github-action-gosec@master
         with:
-          go-version: "1.22"
+          args: './...'
 
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
         with:
-          version: latest
-          args: --timeout=5m
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
 
-  docker-push:
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  build-and-push:
     runs-on: ubuntu-latest
-    needs: [build, code-quality]
+    needs: [test, security-scan]
+    if: github.ref == 'refs/heads/main'
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
 
     steps:
       - name: Checkout repository
@@ -64,40 +101,244 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to DockerHub
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ secrets.DOCKERHUB_USERNAME }}/go-web-app
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app:${{ github.run_id }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/go-web-app:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
 
-  update-helm-chart:
+  deploy-dev:
     runs-on: ubuntu-latest
-    needs: docker-push
+    needs: build-and-push
+    if: github.ref == 'refs/heads/develop'
+    environment: development
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          token: ${{ secrets.TOKEN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
 
-      - name: Update image tag in Helm values
-        run: |
-          sed -i 's/^  tag: .*/  tag: "${{ github.run_id }}"/' helm/go-web-app/values.yaml
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name saas-platform-eks-dev
 
-      - name: Commit and push Helm update
+      - name: Deploy to development
         run: |
-          git config user.email "ci@github.com"
-          git config user.name "GitHub Actions"
-          git add helm/go-web-app/values.yaml
-          git commit -m "chore: update image tag to ${{ github.run_id }}"
-          git push
+          helm upgrade --install go-web-app ./helm/go-web-app \
+            --namespace development \
+            --create-namespace \
+            --set image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set environment=development \
+            --wait \
+            --timeout=10m
+
+      - name: Run deployment validation
+        run: |
+          kubectl wait --for=condition=ready pod -l app=saas-go-web-app -n development --timeout=300s
+          kubectl get pods -n development -l app=saas-go-web-app
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-dev]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name saas-platform-eks-staging
+
+      - name: Deploy to staging
+        run: |
+          helm upgrade --install go-web-app ./helm/go-web-app \
+            --namespace staging \
+            --create-namespace \
+            --set image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set environment=staging \
+            --set replicaCount=2 \
+            --wait \
+            --timeout=10m
+
+      - name: Run smoke tests
+        run: |
+          kubectl wait --for=condition=ready pod -l app=saas-go-web-app -n staging --timeout=300s
+          kubectl port-forward -n staging svc/saas-go-web-app 8080:80 &
+          sleep 10
+          curl -f http://localhost:8080/health || exit 1
+          curl -f http://localhost:8080/ready || exit 1
+          pkill -f "kubectl port-forward"
+
+  deploy-prod:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name saas-platform-eks-prod
+
+      - name: Deploy to production with zero-downtime
+        run: |
+          helm upgrade --install go-web-app ./helm/go-web-app \
+            --namespace production \
+            --create-namespace \
+            --set image.tag=${{ needs.build-and-push.outputs.image-tag }} \
+            --set environment=production \
+            --set replicaCount=3 \
+            --set rollingUpdate.maxUnavailable=0 \
+            --set rollingUpdate.maxSurge=1 \
+            --wait \
+            --timeout=15m
+
+      - name: Run production validation
+        run: |
+          kubectl wait --for=condition=ready pod -l app=saas-go-web-app -n production --timeout=600s
+          kubectl get pods -n production -l app=saas-go-web-app
+
+      - name: Create deployment backup
+        if: failure()
+        run: |
+          kubectl get deployment saas-go-web-app -n production -o yaml > deployment-backup.yaml
+          echo "Deployment backup created"
+
+  rollback:
+    runs-on: ubuntu-latest
+    needs: deploy-prod
+    if: failure() && needs.deploy-prod.result == 'failure'
+    environment: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name saas-platform-eks-prod
+
+      - name: Get previous stable version
+        id: previous
+        run: |
+          PREVIOUS_TAG=$(helm history go-web-app -n production | grep deployed | tail -2 | head -1 | awk '{print $1}')
+          echo "version=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+
+      - name: Rollback to previous version
+        run: |
+          helm rollback go-web-app ${{ steps.previous.outputs.version }} -n production
+          kubectl wait --for=condition=ready pod -l app=saas-go-web-app -n production --timeout=600s
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "🚨 Production deployment failed and rolled back to version ${{ steps.previous.outputs.version }}",
+              attachments: [{
+                color: 'danger',
+                fields: [{
+                  title: 'Repository',
+                  value: '${{ github.repository }}',
+                  short: true
+                }, {
+                  title: 'Commit',
+                  value: '${{ github.sha }}',
+                  short: true
+                }]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  infrastructure-provision:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5"
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan -var-file=${{ matrix.environment }}.tfvars -out=tfplan
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve tfplan

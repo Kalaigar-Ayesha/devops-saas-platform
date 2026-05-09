@@ -1,0 +1,51 @@
+replicaCount: 1
+
+image:
+  repository: kayesha01/go-web-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: dev-go-web-app.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+rollingUpdate:
+  maxUnavailable: 50%
+  maxSurge: 50%
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+
+secrets:
+  name: app-secrets-dev
+  dbHost: "saas-platform-db-dev.cluster-xxx.us-east-1.rds.amazonaws.com"
+  dbPassword: "dev-password-123"
+  jwtSecret: "dev-jwt-secret-key"
+
+environment: "development"
+
+podDisruptionBudget:
+  enabled: false
+
+networkPolicy:
+  enabled: false
