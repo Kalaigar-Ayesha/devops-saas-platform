@@ -22,6 +22,12 @@ A comprehensive DevOps showcase project demonstrating enterprise-grade cloud dep
 
 ## 🏗️ **Architecture Overview**
 
+### **System Architecture Diagram**
+
+![Architecture Diagram](diagram.png)
+
+### **High-Level Architecture**
+
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   GitHub Actions │───▶│   Docker Hub    │───▶│  AWS EKS Cluster │
@@ -35,6 +41,22 @@ A comprehensive DevOps showcase project demonstrating enterprise-grade cloud dep
 │   as Code       │    │   (Trivy/Gosec) │    │   + Grafana     │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
+
+### **Infrastructure Components**
+- **VPC**: Private/public subnets across 3 AZs with NAT Gateway
+- **EKS**: Managed Kubernetes cluster with auto-scaling node groups
+- **RDS**: PostgreSQL database with encryption and automated backups
+- **ALB**: Application Load Balancer with SSL termination
+- **S3**: Object storage with versioning and encryption
+- **ECR**: Container registry with vulnerability scanning
+
+### **CI/CD Pipeline Flow**
+1. **Code Commit** → GitHub Actions triggers
+2. **Testing** → Unit tests, coverage reporting
+3. **Security Scan** → Gosec, Trivy, CodeQL analysis
+4. **Build & Push** → Multi-platform Docker builds
+5. **Deploy** → Terraform + Helm deployment
+6. **Monitor** → Health checks and rollback on failure
 
 ## 🛠️ **Technology Stack**
 
